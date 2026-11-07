@@ -1,0 +1,24 @@
+# mine
+*.xlsx
+*.json
+
+# Build artifacts
+/target
+**/*.rs.bk
+
+# Rustfmt backups
+**/*.rs.bk
+
+# Lock file (опционально)
+Cargo.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
