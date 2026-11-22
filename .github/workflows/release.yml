@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'        # запускается на тегах вида v1.0.0
+  workflow_dispatch: # плюс кнопка запуска вручную в интерфейсе
+
+permissions:
+  contents: write   # нужно, чтобы action мог создавать релиз
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Линуксу нужны системные библиотеки для GUI (eframe/winit тянут их)
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libx11-dev libwayland-dev libxcb1-dev libfontconfig1-dev
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Упаковка: на каждой ОС свой архив
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir chgk-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/chgk chgk-${{ matrix.target }}/
+          tar czf chgk-${{ matrix.target }}.tar.gz chgk-${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir chgk-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/chgk.exe chgk-${{ matrix.target }}/
+          Compress-Archive -Path chgk-${{ matrix.target }} -DestinationPath chgk-${{ matrix.target }}.zip
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            chgk-*.tar.gz
+            chgk-*.zip
