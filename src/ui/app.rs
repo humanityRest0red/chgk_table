@@ -1,18 +1,20 @@
 use eframe::egui;
 
-use crate::models::chgk_game::{Game, Player};
+use crate::models::chgk_db::ChgkDatabase;
+use crate::models::chgk_game::Game;
 use crate::models::timer::GameTimer;
 use crate::ui::save_game::my_toasts;
-use crate::utils::excel_saver::export_to_excel;
+use crate::utils::excel_saver::{export_to_excel, save_region_screenshot};
 
-use super::chgk_app::ChgkApp;
-// use super::timer_panel::show_timer;
 use super::cells::{answer_cell, colored_cell, header_cell};
-use super::layout::{
-    BURGUNDY, CELL_HEIGHT, QUESTION_WIDTH, RATING_WIDTH, ROUND_FILL_COLOR, ROUND_TOTAL_WIDTH,
-    TEAM_WIDTH, TOTAL_WIDTH,
+use super::chgk_app::ChgkApp;
+use super::players::DATABASE_PATH;
+use super::timer_panel::show_timer;
+use super::theme::{
+    CELL_HEIGHT, QUESTION_WIDTH, RATING_WIDTH, ROUND_TOTAL_WIDTH, TEAM_WIDTH, TOTAL_WIDTH, WIDTH_PADDING, HEIGHT_PADDING,
+    palette, apply_theme,
 };
-use super::toolbar::{toolbar_button, LOCKED_COLOR, TOOLBAR_BLUE, UNLOCKED_COLOR};
+use super::toolbar::{toolbar_button, toolbar_button_colored};
 
 impl Default for ChgkApp {
     fn default() -> Self {
@@ -21,11 +23,18 @@ impl Default for ChgkApp {
             questions_per_round: 12,
             team_count: 3,
             game: None,
+            in_setup: false,
             results_locked: false,
             rounds_vertical: true,
             dark_mode: false,
             timer: GameTimer::default(),
+            timer_open: true,
             toasts: my_toasts(),
+            chgk_db: None,
+            roster_states: Vec::new(),
+            rosters_open: false,
+            rosters_overview_open: false,
+            selected_team: 0,
         }
     }
 }
@@ -56,58 +65,48 @@ impl ChgkApp {
     // -----------------------------------
 
     fn show_setup(&mut self, ui: &mut egui::Ui) {
-        let card_color = if self.dark_mode {
-            egui::Color32::from_rgb(38, 42, 50)
-        } else {
-            egui::Color32::WHITE
-        };
+        let p = palette(self.dark_mode);
+        let has_game = self.game.is_some();
 
-        let text_color = if self.dark_mode {
-            egui::Color32::from_rgb(235, 238, 242)
-        } else {
-            egui::Color32::from_rgb(45, 55, 70)
-        };
-
-        let accent = egui::Color32::from_rgb(0, 105, 170);
-
-        let size = egui::vec2(400.0, 400.0);
+        let size = egui::vec2(400.0, 460.0);
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
 
         ui.vertical_centered(|ui| {
             egui::Frame::new()
-                .fill(card_color)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgb(220, 226, 234),
-                ))
+                .fill(p.card)
+                .stroke(egui::Stroke::new(1.0, p.border))
                 .corner_radius(egui::CornerRadius::same(18))
                 .inner_margin(egui::Margin::same(24))
                 .show(ui, |ui| {
-                    // ui.set_height(440.0);
-                    // ui.set_width(300.0);
-
-                    ui.add_space(24.0);
+                    if has_game {
+                        ui.label(
+                            egui::RichText::new("Игра идёт — таблица сохранится")
+                                .size(16.0)
+                                .color(p.text),
+                        );
+                        ui.add_space(8.0);
+                    }
 
                     egui::Grid::new("game_setup_grid")
                         .num_columns(2)
                         .spacing([20.0, 16.0])
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("Количество туров").color(text_color));
+                            ui.label(egui::RichText::new("Количество туров").color(p.text));
                             ui.add_sized(
                                 [50.0, 34.0],
                                 egui::DragValue::new(&mut self.round_count).range(1..=30),
                             );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Вопросов в туре").color(text_color));
+                            ui.label(egui::RichText::new("Вопросов в туре").color(p.text));
                             ui.add_sized(
                                 [50.0, 34.0],
                                 egui::DragValue::new(&mut self.questions_per_round).range(1..=100),
                             );
                             ui.end_row();
 
-                            ui.label(egui::RichText::new("Количество команд").color(text_color));
+                            ui.label(egui::RichText::new("Количество команд").color(p.text));
                             ui.add_sized(
                                 [50.0, 34.0],
                                 egui::DragValue::new(&mut self.team_count).range(1..=50),
@@ -115,33 +114,74 @@ impl ChgkApp {
                             ui.end_row();
                         });
 
-                    ui.add_space(24.0);
+                    ui.add_space(20.0);
+
+                    // Главная кнопка: создать новую или применить к существующей.
+                    let label = if has_game {
+                        "Применить изменения"
+                    } else {
+                        "Создать таблицу"
+                    };
 
                     if ui
                         .add_sized(
                             [240.0, 44.0],
                             egui::Button::new(
-                                egui::RichText::new("Создать таблицу")
+                                egui::RichText::new(label)
                                     .size(18.0)
                                     .strong()
-                                    .color(egui::Color32::WHITE),
+                                    .color(p.accent_text),
                             )
-                            .fill(accent)
+                            .fill(p.accent)
                             .corner_radius(egui::CornerRadius::same(10)),
                         )
                         .clicked()
                     {
-                        let game =
-                            Game::new(self.round_count, self.questions_per_round, self.team_count);
+                        if has_game {
+                            self.apply_setup();
+                            self.in_setup = false; // вернулись в таблицу
+                        } else {
+                            let game = Game::new(
+                                self.round_count,
+                                self.questions_per_round,
+                                self.team_count,
+                            );
+                            self.results_locked = false;
+                            self.rounds_vertical = true;
+                            self.timer = GameTimer::default();
+                            self.game = Some(game);
+                        }
 
-                        self.results_locked = false;
-                        self.rounds_vertical = false;
-                        self.timer = GameTimer::default();
-                        self.game = Some(game);
+                        if self.chgk_db.is_none() {
+                            match ChgkDatabase::load(std::path::Path::new(DATABASE_PATH)) {
+                                Ok(db) => self.chgk_db = Some(db),
+                                Err(e) => {
+                                    eprintln!("Не удалось загрузить базу игроков: {e}")
+                                }
+                            }
+                        }
 
-                        let size = self.game_window_size();
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                        if self.game.is_some() {
+                            let size = self.game_window_size();
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                        }
+                    }
+
+                    if has_game {
+                        ui.add_space(10.0);
+
+                        if ui.button("←  Вернуться к игре").clicked() {
+                            self.in_setup = false;
+                        }
+
+                        if ui.button("Начать новую игру").clicked() {
+                            self.game = None;
+                            self.results_locked = false;
+                            self.rounds_vertical = true;
+                            self.timer = GameTimer::default();
+                            // остаёмся в настройках — там форма создания
+                        }
                     }
 
                     ui.add_space(10.0);
@@ -155,16 +195,62 @@ impl ChgkApp {
 
                         if ui.button(theme_label).clicked() {
                             self.dark_mode = !self.dark_mode;
-
                             ui.ctx().set_theme(if self.dark_mode {
                                 egui::Theme::Dark
                             } else {
                                 egui::Theme::Light
                             });
                         }
+
+                        let label = if self.timer_open {
+                            "⏱ Скрыть таймер"
+                        } else {
+                            "⏱ Таймер"
+                        };
+                        if ui.button(label).clicked() {
+                            self.toggle_timer();
+                        }
                     });
                 });
         });
+    }
+
+    fn apply_setup(&mut self) {
+        let old = self.game.take();
+        let mut new_game = Game::new(self.round_count, self.questions_per_round, self.team_count);
+
+        if let Some(mut old) = old {
+            let teams = self.team_count.min(old.teams.len());
+
+            // Переносим имена команд.
+            for t in 0..teams {
+                new_game.teams[t].name = old.teams[t].name.clone();
+                new_game.teams[t].id = old.teams[t].id.clone();
+            }
+
+            // Переносим ответы по индексам — всё, что влезло в новую сетку.
+            let rounds = self.round_count.min(old.rounds.len());
+            for r in 0..rounds {
+                let questions = self.questions_per_round.min(old.rounds[r].questions.len());
+                for q in 0..questions {
+                    for t in 0..teams {
+                        let value = old.answer_mut(r, q, t).clone();
+                        *new_game.answer_mut(r, q, t) = value;
+                    }
+                }
+            }
+        }
+
+        self.game = Some(new_game);
+
+        // Составы: состояния соответствуют командам по индексу.
+        // Лишние (команд стало меньше) — обрезаем,
+        // недостающие (команд стало больше) — добавляем по умолчанию.
+        let team_total = self.game.as_ref().map_or(0, |g| g.teams.len());
+        self.roster_states.truncate(team_total);
+        while self.roster_states.len() < team_total {
+            self.roster_states.push(Default::default());
+        }
     }
 
     fn show_game(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -175,23 +261,25 @@ impl ChgkApp {
         let mut export_requested = false;
 
         ui.horizontal_wrapped(|ui| {
-            let (lock_label, lock_color) = if self.results_locked {
-                ("Разблокировать ввод", LOCKED_COLOR)
+            let p = palette(self.dark_mode);
+
+            let (lock_label, lock_fill) = if self.results_locked {
+                ("Разблокировать ввод", p.success)
             } else {
-                ("Заблокировать ввод", UNLOCKED_COLOR)
+                ("Заблокировать ввод", p.danger)
             };
 
-            if toolbar_button(ui, lock_label, 190.0, lock_color).clicked() {
+            if toolbar_button_colored(ui, lock_label, 190.0, lock_fill).clicked() {
                 self.results_locked = !self.results_locked;
             }
 
             let mode_button = if self.rounds_vertical {
                 "Все туры в одну линию"
             } else {
-                "Туры отдельнымы блоками"
+                "Туры отдельными блоками"
             };
 
-            if toolbar_button(ui, mode_button, 210.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, mode_button, 210.0).clicked() {
                 self.rounds_vertical = !self.rounds_vertical;
 
                 if let Some(_) = &self.game {
@@ -201,25 +289,32 @@ impl ChgkApp {
                 }
             }
 
-            if toolbar_button(ui, "Сортировать", 130.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, "Сортировать", 130.0).clicked() {
                 sort_teams = true;
             }
 
-            // --- ДОБАВЛЕННЫЕ КНОПКИ СОХРАНЕНИЯ И ЗАГРУЗКИ ---
-            if toolbar_button(ui, "Сохранить", 110.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, "Сохранить", 110.0).clicked() {
                 save_requested = true;
             }
 
-            if toolbar_button(ui, "Загрузить", 110.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, "Загрузить", 110.0).clicked() {
                 load_requested = true;
             }
-            // --------------------------------------------
 
-            if toolbar_button(ui, "Экспорт Excel", 130.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, "Составы", 110.0).clicked() {
+                self.rosters_open = !self.rosters_open;
+            }
+
+            if toolbar_button(ui, "Обзор составов", 150.0).clicked() {
+                self.rosters_overview_open = !self.rosters_overview_open;
+            }
+
+            if toolbar_button(ui, "Сохранить эксель, скрин", 130.0).clicked()
+            {
                 export_requested = true;
             }
 
-            if toolbar_button(ui, "Настройки", 110.0, TOOLBAR_BLUE).clicked() {
+            if toolbar_button(ui, "Настройки", 110.0).clicked() {
                 go_to_settings = true;
             }
         });
@@ -232,15 +327,17 @@ impl ChgkApp {
         }
         self.toasts.show(ui);
 
-        if export_requested {
-            export_to_excel(self.game.clone());
-        }
-
         if go_to_settings {
-            self.game = None;
-            self.results_locked = false;
-            self.rounds_vertical = false;
-            self.timer = GameTimer::default();
+            self.in_setup = true;
+
+            // Синхронизируем параметры с текущей игрой ОДИН раз,
+            // в момент перехода в настройки.
+            if let Some(game) = &self.game {
+                self.round_count = game.rounds.len().max(1);
+                self.questions_per_round = game.questions_per_round().max(1);
+                self.team_count = game.teams.len().max(1);
+            }
+
             return;
         }
 
@@ -258,18 +355,45 @@ impl ChgkApp {
             game.sort_game_teams();
         }
 
+        let table_rect;
+
         if vertical {
-            egui::ScrollArea::vertical()
+            let response = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    draw_rounds_vertical(ui, game, locked);
+                    draw_rounds_vertical(ui, game, locked, self.chgk_db.as_ref());
                 });
+            table_rect = response.inner_rect;
         } else {
-            egui::ScrollArea::both()
+            let response = egui::ScrollArea::both()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    draw_all_rounds_horizontal(ui, game, locked);
+                    draw_all_rounds_horizontal(ui, game, locked, self.chgk_db.as_ref());
                 });
+            table_rect = response.inner_rect;
+        }
+
+        let p = palette(self.dark_mode);
+
+        let add_button = egui::Button::new(
+            egui::RichText::new("➕ Добавить команду")
+                .size(18.0)
+                .color(p.header_text),
+        )
+        .fill(p.header)
+        .corner_radius(egui::CornerRadius::same(8));
+
+        if ui.add_sized([220.0, 40.0], add_button).clicked() {
+            game.add_team();
+        }
+
+        // Экспорт — здесь, когда rect уже известен
+        if export_requested {
+            export_to_excel(self.game.clone());
+
+            if let Err(e) = save_region_screenshot(table_rect, ctx) {
+                eprintln!("Ошибка при сохранении скриншота: {}", e);
+            }
         }
     }
 }
@@ -281,7 +405,12 @@ fn draw_score_grid(
     locked: bool,
     rounds_to_show: &[usize],
     start_q_num: usize,
+    db: Option<&ChgkDatabase>,
 ) {
+    // Отложенное удаление: строка помечается во время отрисовки,
+    // команда удаляется после цикла, чтобы не ломать индексы.
+    let mut delete_team: Option<usize> = None;
+
     egui::Grid::new(grid_id)
         .striped(true)
         .spacing([1.0, 1.0])
@@ -301,44 +430,247 @@ fn draw_score_grid(
             }
             ui.end_row();
 
-            for t_idx in 0..game.teams.len() {
-                draw_team_base_info(ui, t_idx, game);
+            let mut t_idx = 0;
+            while t_idx < game.teams.len() {
+                draw_team_base_info(ui, t_idx, game, db, grid_id, &mut delete_team);
                 for &r_idx in rounds_to_show {
                     draw_round_data_for_team(ui, game, r_idx, t_idx, locked);
                 }
                 ui.end_row();
+                t_idx += 1;
             }
 
-            ui.label(
-                egui::RichText::new("R вопроса")
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            );
+            let p = palette(ui.visuals().dark_mode);
+            header_cell(ui, "R вопроса", TEAM_WIDTH);
+            // ui.label(egui::RichText::new("R вопроса").strong().color(p.text));
             ui.label("");
             ui.label("");
 
             for &r_idx in rounds_to_show {
                 let question_ratings = game.question_ratings();
                 for rating in &question_ratings[r_idx] {
-                    colored_cell(ui, &rating.to_string(), QUESTION_WIDTH, ROUND_FILL_COLOR);
+                    colored_cell(ui, &rating.to_string(), QUESTION_WIDTH, p.total);
                 }
                 ui.label("");
             }
             ui.end_row();
         });
+
+    // Удаляем после отрисовки сетки — когда заём game уже свободен.
+    if let Some(idx) = delete_team.take() {
+        game.remove_team(idx);
+    }
 }
 
-fn draw_team_base_info(ui: &mut egui::Ui, team_index: usize, game: &mut Game) {
-    ui.add_sized(
-        [TEAM_WIDTH, CELL_HEIGHT],
-        egui::TextEdit::singleline(&mut game.teams[team_index].name),
-    );
+fn draw_team_base_info(
+    ui: &mut egui::Ui,
+    team_index: usize,
+    game: &mut Game,
+    db: Option<&ChgkDatabase>,
+    grid_id: &str,
+    pending_delete: &mut Option<usize>,
+) {
+    draw_team_name_row(ui, team_index, game, db, grid_id, pending_delete);
+    draw_team_score_row(ui, team_index, game);
+}
 
-    let score_text = game.team_score_text(team_index);
-    let rating = game.team_rating(team_index);
+fn draw_team_score_row(ui: &mut egui::Ui, team_index: usize, game: &mut Game) {
+    let p = palette(ui.visuals().dark_mode);
+    colored_cell(ui, &game.team_score_text(team_index), TOTAL_WIDTH, p.total);
+    colored_cell(ui, &game.team_rating(team_index).to_string(), RATING_WIDTH, p.total);
+}
 
-    colored_cell(ui, &score_text, TOTAL_WIDTH, BURGUNDY);
-    colored_cell(ui, &rating.to_string(), RATING_WIDTH, BURGUNDY);
+fn draw_team_name_row(
+    ui: &mut egui::Ui,
+    team_index: usize,
+    game: &mut Game,
+    db: Option<&ChgkDatabase>,
+    grid_id: &str,
+    pending_delete: &mut Option<usize>,
+) {
+    let p = palette(ui.visuals().dark_mode);
+    let edit_id = egui::Id::new(("team_name_edit", grid_id, team_index));
+    let editing_id = edit_id.with("editing");
+    let mut editing = ui.memory(|m| m.data.get_temp::<bool>(editing_id).unwrap_or(false));
+    let confirm_id = egui::Id::new(("delete_confirm", grid_id, team_index));
+
+    ui.horizontal(|ui| {
+        // --- имя: жирная метка ИЛИ редактор с подсказками ---
+        if editing {
+            let edit = ui.add_sized(
+                [TEAM_WIDTH - 40.0, CELL_HEIGHT],
+                egui::TextEdit::singleline(&mut game.teams[team_index].name),
+            );
+            if !edit.has_focus() {
+                edit.request_focus();
+            }
+            if let Some(db) = db {
+                if draw_name_suggestions(ui, team_index, game, db, edit.clone(), edit_id) {
+                    // Выбрали команду из базы — редактор закрываем
+                    editing = false;
+                }
+            }
+            if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                editing = false;
+            }
+        } else {
+            let name = game.teams[team_index].name.clone();
+            let mut label = ui.add_sized(
+                [TEAM_WIDTH - 40.0, CELL_HEIGHT],
+                egui::Label::new(
+                    egui::RichText::new(name.clone())
+                        .strong()
+                        .size(25.0)
+                        .color(p.text),
+                )
+                .truncate(),
+            );
+
+            // Оригинальное название видно при наведении, если имя меняли
+            let original = game.teams[team_index].original_name.clone();
+            if original != name {
+                label = label.on_hover_text(format!("Оригинал: {original}"));
+            }
+
+            if label.double_clicked() {
+                editing = true;
+            }
+        }
+
+        // --- кнопка удаления (без изменений) ---
+        if game.team_has_answers(team_index) {
+            let btn = ui.add_enabled(
+                false,
+                egui::Button::new(egui::RichText::new("−").color(egui::Color32::GRAY)),
+            );
+            btn.on_hover_text("У команды есть заполненные ответы — удалять нельзя");
+        } else {
+            let mut confirming =
+                ui.memory(|m| m.data.get_temp::<bool>(confirm_id).unwrap_or(false));
+
+            let label = if confirming { "Удалить?" } else { "−" };
+            let del = ui
+                .small_button(egui::RichText::new(label).strong().color(egui::Color32::WHITE));
+
+            if del.clicked() {
+                if confirming {
+                    *pending_delete = Some(team_index);
+                    confirming = false;
+                } else {
+                    confirming = true;
+                }
+            } else if ui.input(|i| i.pointer.any_click()) && !del.hovered() {
+                confirming = false;
+            }
+
+            ui.memory_mut(|m| m.data.insert_temp(confirm_id, confirming));
+        }
+    });
+
+    ui.memory_mut(|m| m.data.insert_temp(editing_id, editing));
+}
+
+fn draw_name_suggestions(
+    ui: &mut egui::Ui,
+    team_index: usize,
+    game: &mut Game,
+    db: &ChgkDatabase,
+    response: egui::Response,
+    edit_id: egui::Id,
+) -> bool {
+    let sugg_id = edit_id.with("suggestions");
+    let popup_id = edit_id.with("popup");
+    let open_id = edit_id.with("popup_open");
+    let mut chosen_applied = false;
+
+    if response.changed() {
+        let suggestions = db.search_team(&game.teams[team_index].name, 5);
+        ui.memory_mut(|m| {
+            m.data.insert_temp(sugg_id, suggestions.clone());
+            m.data.insert_temp(open_id, !suggestions.is_empty());
+        });
+    }
+
+    let mut open = ui.memory(|m| m.data.get_temp::<bool>(open_id).unwrap_or(false));
+    let has_focus = response.has_focus();
+
+    if has_focus || open {
+        let suggestions: Vec<(String, String)> =
+            ui.memory(|m| m.data.get_temp(sugg_id).unwrap_or_default());
+
+        if !suggestions.is_empty() {
+            let pos = response.rect.left_bottom() + egui::vec2(0.0, 4.0);
+            let mut chosen: Option<(String, String)> = None;
+            let mut popup_hovered = false;
+
+            let area_response = egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(response.rect.width());
+
+                        for (code, name) in &suggestions {
+                            let item = ui.selectable_label(false, format!("{code} — {name}"));
+                            popup_hovered |= item.hovered();
+                            if item.clicked() {
+                                chosen = Some((code.clone(), name.clone()));
+                            }
+                        }
+                    });
+                })
+                .response;
+
+            let clicked_outside = ui.input(|i| i.pointer.any_click())
+                && !response.hovered()
+                && !popup_hovered
+                && !area_response.contains_pointer();
+
+            if let Some((code, name)) = chosen {
+                game.teams[team_index].name = name.clone();
+                game.teams[team_index].original_name = name; // оригинал из базы
+                game.teams[team_index].id = code;
+                open = false;
+                chosen_applied = true;
+            } else if clicked_outside {
+                open = false;
+            } else if has_focus {
+                open = true;
+            }
+
+            ui.memory_mut(|m| m.data.insert_temp(open_id, open));
+        }
+    }
+
+    chosen_applied
+}
+
+impl ChgkApp {
+    pub fn game_window_size(&self) -> egui::Vec2 {
+        let Some(game) = &self.game else {
+            return egui::vec2(200.0, 340.0);
+        };
+
+        let team_rows = game.teams.len() as f32;
+        let rows_height = (team_rows + 2.0) * CELL_HEIGHT;
+        let round_overhead = 80.0;
+
+        let height = if self.rounds_vertical {
+            game.rounds.len() as f32 * (rows_height + round_overhead) + HEIGHT_PADDING
+        } else {
+            rows_height + round_overhead + HEIGHT_PADDING
+        };
+
+        let questions_width = game.questions_per_round() as f32 * QUESTION_WIDTH;
+        let width = TEAM_WIDTH
+            + TOTAL_WIDTH
+            + RATING_WIDTH
+            + questions_width
+            + ROUND_TOTAL_WIDTH
+            + WIDTH_PADDING;
+
+        egui::vec2(width, height)
+    }
 }
 
 fn draw_round_data_for_team(
@@ -354,19 +686,31 @@ fn draw_round_data_for_team(
     }
 
     let score_text = game.round_score_text(team_index, round_index);
-    colored_cell(ui, &score_text, ROUND_TOTAL_WIDTH, ROUND_FILL_COLOR);
+
+    let p = palette(ui.visuals().dark_mode);
+    colored_cell(ui, &score_text, ROUND_TOTAL_WIDTH, p.total);
 }
 
-fn draw_all_rounds_horizontal(ui: &mut egui::Ui, game: &mut Game, locked: bool) {
+fn draw_all_rounds_horizontal(
+    ui: &mut egui::Ui,
+    game: &mut Game,
+    locked: bool,
+    db: Option<&ChgkDatabase>,
+) {
     let all_rounds: Vec<usize> = (0..game.rounds.len()).collect();
-    draw_score_grid(ui, "h_all", game, locked, &all_rounds, 1);
+    draw_score_grid(ui, "h_all", game, locked, &all_rounds, 1, db);
 }
 
-fn draw_rounds_vertical(ui: &mut egui::Ui, game: &mut Game, locked: bool) {
+fn draw_rounds_vertical(
+    ui: &mut egui::Ui,
+    game: &mut Game,
+    locked: bool,
+    db: Option<&ChgkDatabase>,
+) {
     let mut q_num = 1;
     for r_idx in 0..game.rounds.len() {
         ui.heading(format!("Тур {}", r_idx + 1));
-        draw_score_grid(ui, &format!("v_{r_idx}"), game, locked, &[r_idx], q_num);
+        draw_score_grid(ui, &format!("v_{r_idx}"), game, locked, &[r_idx], q_num, db);
         q_num += game.rounds[r_idx].questions.len();
         ui.add_space(12.0);
     }
@@ -374,34 +718,28 @@ fn draw_rounds_vertical(ui: &mut egui::Ui, game: &mut Game, locked: bool) {
 
 impl eframe::App for ChgkApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let background = if self.dark_mode {
-            egui::Color32::from_rgb(30, 33, 38)
-        } else {
-            egui::Color32::from_rgb(248, 250, 255)
-        };
-
-        ui.painter().rect_filled(ui.max_rect(), 0.0, background);
-        ui.visuals_mut().panel_fill = background;
-
         let ctx = ui.ctx().clone();
+
+        let p = palette(self.dark_mode);
+        // let screen = ctx.input(|i| i.raw.screen_rect);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, p.background);
+
 
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
             1200.0, 0.0,
         )));
 
-        let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
-
-        style.text_styles = [
-            (egui::TextStyle::Heading, egui::FontId::proportional(32.0)),
-            (egui::TextStyle::Body, egui::FontId::proportional(24.0)),
-            (egui::TextStyle::Button, egui::FontId::proportional(24.0)),
-            (egui::TextStyle::Small, egui::FontId::proportional(22.0)),
-            (egui::TextStyle::Monospace, egui::FontId::monospace(20.0)),
-        ]
-        .into();
-
-        ctx.set_style_of(egui::Theme::Light, style.clone());
-        ctx.set_style_of(egui::Theme::Dark, style);
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let mut style = (*ctx.style_of(theme)).clone();
+            style.text_styles = [
+                (egui::TextStyle::Heading, egui::FontId::proportional(32.0)),
+                (egui::TextStyle::Body, egui::FontId::proportional(24.0)),
+                (egui::TextStyle::Button, egui::FontId::proportional(24.0)),
+                (egui::TextStyle::Small, egui::FontId::proportional(22.0)),
+                (egui::TextStyle::Monospace, egui::FontId::monospace(20.0)),
+            ].into();
+            ctx.set_style_of(theme, style);
+        }
 
         ctx.set_theme(if self.dark_mode {
             egui::Theme::Dark
@@ -409,125 +747,48 @@ impl eframe::App for ChgkApp {
             egui::Theme::Light
         });
 
-        if self.game.is_some() {
+        apply_theme(&ctx);
+
+        if self.in_setup {
+            self.show_setup(ui);
+        } else if self.game.is_some() {
             self.show_game(ui, &ctx);
         } else {
-            ui.vertical_centered(|ui| {
-                self.show_setup(ui);
-            });
+            self.show_setup(ui);
         }
 
+        self.show_timer_window(&ctx);
         self.show_rosters_window(&ctx);
+        self.show_rosters_overview(&ctx);
     }
 }
 
 impl ChgkApp {
-    fn show_rosters_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Настройка составов").show(ctx, |ui| {
-            if let Some(game) = &mut self.game {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for t_idx in 0..game.teams.len() {
-                        // Используем collapsing, чтобы список игроков каждой команды не занимал весь экран
-                        ui.collapsing(
-                            format!(
-                                "{} ({} чел.)",
-                                game.teams[t_idx].name,
-                                game.teams[t_idx].roster.len()
-                            ),
-                            |ui| {
-                                egui::Grid::new(format!("grid_team_{t_idx}"))
-                                    .num_columns(4) // Добавляем колонку для удаления конкретного игрока
-                                    .spacing([10.0, 4.0])
-                                    .show(ui, |ui| {
-                                        ui.label("Фамилия");
-                                        ui.label("Имя");
-                                        ui.label("Отчество");
-                                        ui.label(""); // Колонка для кнопки удаления
-                                        ui.end_row();
+    fn toggle_timer(&mut self) {
+        self.timer_open = !self.timer_open;
+    }
 
-                                        for p_idx in 0..game.teams[t_idx].roster.len() {
-                                            let player = &mut game.teams[t_idx].roster[p_idx];
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut player.last_name)
-                                                    .desired_width(100.0),
-                                            );
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut player.first_name)
-                                                    .desired_width(100.0),
-                                            );
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut player.middle_name)
-                                                    .desired_width(100.0),
-                                            );
+    fn show_timer_window(&mut self, ctx: &egui::Context) {
+        let _ticked = self.timer.tick();
 
-                                            if ui.button("❌").clicked() {
-                                                // Помечаем игрока на удаление или удаляем сразу (см. ниже)
-                                            }
-                                            ui.end_row();
-                                        }
-                                    });
+        let screen = ctx.input(|i| i.raw.screen_rect.unwrap_or(egui::Rect::NOTHING));
 
-                                ui.add_space(5.0);
-                                ui.horizontal(|ui| {
-                                    if ui.button("➕ Добавить игрока").clicked() {
-                                        if game.teams[t_idx].roster.len() < 9 {
-                                            game.teams[t_idx].roster.push(Player::default());
-                                        }
-                                    }
-                                });
-                            },
-                        );
-                        ui.separator();
-                    }
+        let mut open = self.timer_open;
+        egui::Window::new("⏱  Таймер")
+            .open(&mut open)
+            .default_pos(screen.right_top() - egui::vec2(540.0, 4.0))
+            .default_width(520.0)
+            .resizable(false)
+            .collapsible(true)
+            .show(ctx, |ui| {
+                if self.timer.is_running() || self.timer.is_writing() {
+                    ui.ctx().request_repaint();
+                }
+                ui.vertical_centered(|ui| {
+                    show_timer(ui, &mut self.timer);
                 });
-            } else {
-                ui.label("Сначала создайте или загрузите игру");
-            }
-        });
+            });
+
+        self.timer_open = open;
     }
 }
-
-// {
-//         // let available_height = ui.available_height();
-
-//         if self.game.is_some() {
-//             self.show_game(ui, &ctx);
-//         } else {
-//             // let menu_height = 280.0;
-//             // let top_space = ((available_height - menu_height) / 2.0).max(0.0);
-//             // ui.add_space(top_space);
-
-//             ui.vertical_centered(|ui| {
-//                 self.show_setup(ui);
-//             });
-//         }
-
-//         // let available = ui.available_size();
-//         // let timer_height = 300.0;
-//         // let content_height = (available.y - timer_height).max(0.0);
-
-//         // ui.allocate_ui_with_layout(
-//         //     egui::vec2(available.x, content_height),
-//         //     egui::Layout::top_down(egui::Align::Min),
-//         //     |ui| {
-//         //         if self.game.is_some() {
-//         //             self.show_game(ui, &ctx);
-//         //         } else {
-//         //             self.show_setup(ui);
-//         //         }
-//         //     },
-//         // );
-
-//         // let need_timer = false;
-//         // if need_timer {
-//         //     ui.separator();
-
-//         //     ui.allocate_ui_with_layout(
-//         //         egui::vec2(available.x, timer_height),
-//         //         egui::Layout::top_down(egui::Align::Center),
-//         //         |ui| {
-//         //             show_timer(ui, &mut self.timer);
-//         //         },
-//         //     );
-//         // }
-//     }

@@ -6,5 +6,8 @@ all:
 release:
 	cargo build --release
 
+check:
+	cargo check
+
 windows:
 	cargo build --release --target x86_64-pc-windows-gnu

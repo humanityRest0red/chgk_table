@@ -1,24 +1,36 @@
 use eframe::egui;
+use super::theme::palette;
 
-pub(super) const TOOLBAR_BLUE: egui::Color32 = egui::Color32::from_rgb(45, 75, 115);
-pub(super) const TOOLBAR_STROKE: egui::Color32 = egui::Color32::from_rgb(80, 105, 145);
-pub(super) const LOCKED_COLOR: egui::Color32 = egui::Color32::from_rgb(45, 115, 75);
-pub(super) const UNLOCKED_COLOR: egui::Color32 = egui::Color32::from_rgb(125, 55, 60);
-
-pub(super) fn toolbar_button(
+pub(super) fn toolbar_button_colored(
     ui: &mut egui::Ui,
     text: &str,
     width: f32,
-    color: egui::Color32,
+    fill: egui::Color32,
+) -> egui::Response {
+    let p = palette(ui.visuals().dark_mode);
+    styled_button(ui, text, [width, 32.0], fill, p.header_text)
+}
+
+pub(super) fn toolbar_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
+    let p = palette(ui.visuals().dark_mode);
+    styled_button(ui, text, [width, 32.0], p.header, p.header_text)
+}
+
+fn styled_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    size: [f32; 2],
+    fill: egui::Color32,
+    text_color: egui::Color32,
 ) -> egui::Response {
     ui.add_sized(
-        [width, 34.0],
+        size,
         egui::Button::new(
-            egui::RichText::new(text)
-                .size(15.0)
-                .color(egui::Color32::WHITE),
+            egui::RichText::new(label)
+                .strong()
+                .color(text_color),
         )
-        .fill(color)
-        .stroke(egui::Stroke::new(1.0, TOOLBAR_STROKE)),
+        .fill(fill)
+        .corner_radius(egui::CornerRadius::same(10)),
     )
 }
