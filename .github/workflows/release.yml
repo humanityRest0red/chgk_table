@@ -10,56 +10,73 @@ permissions:
   contents: write   # нужно, чтобы action мог создавать релиз
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-
-    runs-on: ${{ matrix.os }}
-
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
-
-      # Линуксу нужны системные библиотеки для GUI (eframe/winit тянут их)
+          targets: x86_64-unknown-linux-gnu
       - name: Install Linux deps
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libx11-dev libwayland-dev libxcb1-dev libfontconfig1-dev
-
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libwayland-dev libxcb1-dev \
+            libfontconfig1-dev \
+            libegl-dev libgl-dev
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      # Упаковка: на каждой ОС свой архив
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+      - name: Package
         run: |
-          mkdir chgk-${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/chgk chgk-${{ matrix.target }}/
-          tar czf chgk-${{ matrix.target }}.tar.gz chgk-${{ matrix.target }}
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          mkdir chgk-${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/chgk.exe chgk-${{ matrix.target }}/
-          Compress-Archive -Path chgk-${{ matrix.target }} -DestinationPath chgk-${{ matrix.target }}.zip
-
+          mkdir chgk-x86_64-unknown-linux-gnu
+          cp target/x86_64-unknown-linux-gnu/release/chgk chgk-x86_64-unknown-linux-gnu/
+          tar czf chgk-x86_64-unknown-linux-gnu.tar.gz chgk-x86_64-unknown-linux-gnu
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: |
-            chgk-*.tar.gz
-            chgk-*.zip
+          files: chgk-x86_64-unknown-linux-gnu.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        run: |
+          mkdir chgk-x86_64-pc-windows-msvc
+          cp target/x86_64-pc-windows-msvc/release/chgk.exe chgk-x86_64-pc-windows-msvc/
+          Compress-Archive -Path chgk-x86_64-pc-windows-msvc -DestinationPath chgk-x86_64-pc-windows-msvc.zip
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: chgk-x86_64-pc-windows-msvc.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+      - name: Package
+        run: |
+          mkdir chgk-aarch64-apple-darwin
+          cp target/aarch64-apple-darwin/release/chgk chgk-aarch64-apple-darwin/
+          tar czf chgk-aarch64-apple-darwin.tar.gz chgk-aarch64-apple-darwin
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: chgk-aarch64-apple-darwin.tar.gz
