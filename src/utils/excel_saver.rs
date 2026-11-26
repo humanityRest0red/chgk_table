@@ -167,8 +167,7 @@ fn get_or_create_dir() -> Result<PathBuf, std::io::Error> {
     std::fs::create_dir_all(&dir)?; // не падает, если папка уже есть
     Ok(dir)
 }
-
-use screenshots::Screen;
+use xcap::Monitor;
 
 pub fn save_region_screenshot(
     area: eframe::egui::Rect,
@@ -188,8 +187,8 @@ pub fn save_region_screenshot(
     let h = (area.height() * ppp) as u32;
 
     // Находим монитор по точке и снимаем нужный прямоугольник
-    let screen = Screen::from_point(x, y)?;
-    let crop = screen.capture_area(x, y, w, h)?;
+    let screen = Monitor::from_point(x, y)?;
+    let crop = screen.capture_region(x.try_into().unwrap(), y.try_into().unwrap(), w, h)?;
 
     let dir = get_or_create_dir()?;
     let file_name = format!("{}.png", Local::now().format("%H%M%S_%3f"));
