@@ -24,7 +24,7 @@ fn main() -> eframe::Result<()> {
             // Обход бага winit: окна с resizable(false) на Windows
             // не перетаскиваются за заголовок. Оставляем resizable,
             // но фиксируем размер равными min и max.
-            .with_resizable(true)
+            .with_resizable(true),
             // .with_min_inner_size(WIN_SIZE)
             // .with_max_inner_size(WIN_SIZE),
         ..Default::default()
