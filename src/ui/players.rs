@@ -80,9 +80,9 @@ impl ChgkApp {
                                     game.teams[t_idx].name,
                                     game.teams[t_idx].roster.len()
                                 );
-                                if ui.selectable_label(selected, label).clicked() {
-                                    *selected_team = t_idx;
-                                }
+                                if team_label(ui, selected, label).clicked() {
+        *selected_team = t_idx;
+    }
                             }
                         });
                     });
@@ -261,19 +261,16 @@ impl ChgkApp {
             for chunk_start in (0..game.teams.len()).step_by(COLUMNS) {
                 let chunk_end = (chunk_start + COLUMNS).min(game.teams.len());
 
-                // Шапка: кликабельные названия команд этой тройки
-                for t_idx in chunk_start..chunk_end {
-                    let team = &game.teams[t_idx];
-                    let selected = t_idx == *selected_team;
-                    let label = format!("{} ({})", team.name, team.roster.len());
-                    if ui
-                        .selectable_label(selected, egui::RichText::new(label).strong())
-                        .clicked()
-                    {
-                        *selected_team = t_idx;
-                        open_rosters_requested = true;
-                    }
-                }
+               for t_idx in chunk_start..chunk_end {
+    let team = &game.teams[t_idx];
+    let selected = t_idx == *selected_team;
+    let label = format!("{} ({})", team.name, team.roster.len());
+    if team_label(ui, selected, label).clicked() {
+        *selected_team = t_idx;
+        open_rosters_requested = true;
+    }
+}
+
                 ui.end_row();
 
                 // Строки игроков — те же 3 команды
@@ -319,6 +316,25 @@ impl ChgkApp {
         self.rosters_overview_open = open;
     }
 }
+
+fn team_label(ui: &mut egui::Ui, selected: bool, label: String) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let text_color = if dark {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_gray(30) // почти чёрный на светлом фоне
+    };
+
+    ui.visuals_mut().selection.bg_fill = if dark {
+        egui::Color32::from_gray(90) // тёмно-серый вместо синего
+    } else {
+        egui::Color32::from_gray(215) // светло-серый вместо синего
+    };
+    ui.visuals_mut().selection.stroke = (1.0, text_color).into();
+
+    ui.selectable_label(selected, egui::RichText::new(label).strong().color(text_color))
+}
+
 
 fn team_name_is_default(name: &str) -> bool {
     name.is_empty() || name.starts_with("Команда ")
