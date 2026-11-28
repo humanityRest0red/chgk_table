@@ -725,9 +725,9 @@ impl eframe::App for ChgkApp {
         ui.painter().rect_filled(ui.max_rect(), 0.0, p.background);
 
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            1200.0, 0.0,
-        )));
+        // ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+        //     1200.0, 0.0,
+        // )));
 
         for theme in [egui::Theme::Light, egui::Theme::Dark] {
             let mut style = (*ctx.style_of(theme)).clone();

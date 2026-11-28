@@ -33,6 +33,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Таблица «Что? Где? Когда?»",
         options,
-        Box::new(|_creation_context| Ok(Box::new(ui::chgk_app::ChgkApp::default()))),
+        Box::new(|cc| {
+            // Фиксируем масштаб 1.0, как на Linux/WSL
+            cc.egui_ctx.set_pixels_per_point(1.0);
+            Ok(Box::new(ui::chgk_app::ChgkApp::default()))
+        }),
     )
 }
